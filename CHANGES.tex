@@ -1,0 +1,383 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{booktabs}
+
+\definecolor{bgshade}{HTML}{F7F2EA}
+\definecolor{bdr}{HTML}{E2DBCE}
+\definecolor{acc}{HTML}{9A7040}
+\definecolor{tx2}{HTML}{524A40}
+\definecolor{tx3}{HTML}{948B81}
+\definecolor{red}{HTML}{B83232}
+\definecolor{green}{HTML}{387038}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=acc,
+  urlcolor=acc
+}
+
+\lstset{
+  backgroundcolor=\color{bgshade},
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{bdr},
+  framesep=6pt,
+  xleftmargin=10pt,
+  xrightmargin=4pt,
+  showstringspaces=false,
+  keywordstyle=\color{acc}\bfseries,
+  commentstyle=\color{tx3}\itshape,
+  stringstyle=\color{green}
+}
+
+\titleformat{\section}{\Large\bfseries\color{acc}}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{tx2}}{\thesubsection.}{0.5em}{}
+
+\title{\textbf{Studio OS --- Session Change Log}\\[4pt]
+  \large Duplicate-Contacts Fix, Database Cleanup, and UX Polish}
+\author{Working directory: \texttt{/Users/putla\_theophila/Desktop/studios}}
+\date{2026-05-19}
+
+\begin{document}
+\maketitle
+
+\section{Summary}
+
+Three threads of work landed in this session:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Duplicate-contacts bug.} The \texttt{/api/import} POST endpoint
+        could create multiple rows for the same person because
+        (a) the sourcing loop had no de-duplication and
+        (b) no check ran against the existing contacts table at insert time.
+        Fixed at both the API and the dialog layer.
+  \item \textbf{Database cleanup.} Two duplicate contact pairs that already
+        existed in production were merged in-place, with foreign-key
+        references rewritten to the survivors.
+  \item \textbf{UX polish.} Replaced blocking \texttt{alert()}/\texttt{confirm()}
+        calls with a non-blocking toast stack and a styled confirm dialog.
+        Added a search-bar icon, clear-button, and card hover-lift.
+        No structural changes to existing pages.
+\end{enumerate}
+
+\hrule
+\bigskip
+
+\section{Duplicate Contacts --- Root Cause and Fix}
+
+\subsection{Root cause}
+
+In \texttt{src/app/api/import/route.ts} (POST handler):
+
+\begin{itemize}[leftmargin=*]
+  \item The \emph{sourcing} branch unconditionally pushed every selected POC
+        into \texttt{newContacts}, so two sourcing rows with the same
+        \texttt{poc\_name} produced two contacts.
+  \item The \emph{events} and \emph{content} branches deduped against
+        the in-memory \texttt{newContacts} array, but \emph{not} against the
+        existing \texttt{contacts} table. The GET filter that hides imported
+        POCs could race with stale React Query cache, allowing the same item
+        to be selected and re-inserted.
+  \item The \texttt{ImportDialog} client component had no \texttt{importing}
+        guard, so a double-click on \emph{Import Selected} fired two POSTs.
+\end{itemize}
+
+\subsection{API-side fix}
+
+\textbf{File:} \texttt{src/app/api/import/route.ts}
+
+Pre-fetched existing contact names into a \texttt{taken} set, then routed
+every insert through a single \texttt{tryAdd(name, payload)} helper that
+skips empties, names already in the database, and intra-batch duplicates
+across all three sources:
+
+\begin{lstlisting}[language=Java]
+const { data: existingContacts } = await supabase
+  .from('contacts').select('name');
+const taken = new Set(
+  (existingContacts || []).map(c => (c.name || '').toLowerCase())
+);
+
+const tryAdd = (name, payload) => {
+  const k = (name || '').trim().toLowerCase();
+  if (!k || taken.has(k)) return;
+  taken.add(k);
+  newContacts.push(payload);
+};
+\end{lstlisting}
+
+The sourcing, events, and content loops now all call \texttt{tryAdd(...)}
+instead of pushing directly.
+
+\subsection{Client-side fix}
+
+\textbf{File:} \texttt{src/app/contacts/ContactsClient.tsx}
+
+Added an \texttt{importing} state to \texttt{ImportDialog} so the
+\emph{Import Selected} button is disabled while the request is in flight
+and shows \emph{Importing\ldots}. The Cancel button is also disabled
+during the request to prevent a stale close.
+
+\hrule
+\bigskip
+
+\section{Live Database Cleanup}
+
+Ran SQL via the Supabase Management API
+(project \texttt{glbhstjsdtgiblppvlaq}) to merge pre-existing duplicates.
+
+Found two duplicate groups, both with two rows each:
+
+\begin{lstlisting}[language=SQL]
+SELECT lower(name) AS k, count(*) AS n
+FROM contacts
+GROUP BY lower(name)
+HAVING count(*) > 1;
+-- Returned: theo (2), theophila (2)
+\end{lstlisting}
+
+Inside a transaction:
+
+\begin{enumerate}[leftmargin=*]
+  \item For each duplicate group, chose the \emph{earliest}
+        \texttt{created\_at} row as the canonical \emph{keeper}.
+  \item Re-pointed \texttt{poc\_contact\_id} on
+        \texttt{sourcing\_records}, \texttt{events}, and
+        \texttt{content\_items} from the loser id to the keeper id.
+  \item Deleted the loser rows.
+\end{enumerate}
+
+\begin{lstlisting}[language=SQL]
+BEGIN;
+UPDATE sourcing_records s SET poc_contact_id = r.keeper
+FROM (
+  SELECT id AS loser,
+         FIRST_VALUE(id) OVER (
+           PARTITION BY lower(name)
+           ORDER BY created_at, id
+         ) AS keeper
+  FROM contacts
+) r
+WHERE s.poc_contact_id = r.loser AND r.loser <> r.keeper;
+-- repeat for events and content_items
+
+DELETE FROM contacts WHERE id IN (
+  SELECT id FROM (
+    SELECT id, ROW_NUMBER() OVER (
+      PARTITION BY lower(name) ORDER BY created_at, id
+    ) AS rn FROM contacts
+  ) x WHERE rn > 1
+);
+COMMIT;
+\end{lstlisting}
+
+\textbf{Result:} duplicate-count query returns zero rows; total contacts
+collapsed from four to two.
+
+\hrule
+\bigskip
+
+\section{UX Polish --- Toast and Confirm}
+
+\subsection{New components}
+
+\subsubsection*{\texttt{src/components/Toast.tsx} \textit{(new)}}
+
+A module-level event store with an attached \texttt{<ToastViewport />}
+React component. Public API:
+
+\begin{lstlisting}[language=Java]
+import { toast } from '@/components/Toast';
+
+toast.success('Contact updated');
+toast.error('Save failed');
+toast.info('...');
+\end{lstlisting}
+
+Toasts auto-dismiss (3.8s default, 5.2s for errors), stack
+bottom-right, animate in, and can be dismissed manually via an
+\texttt{IconClose} button. Each kind (success / error / info) has its own
+colour, inline SVG icon, and ARIA role
+(\texttt{alert} for errors, \texttt{status} otherwise).
+
+\subsubsection*{\texttt{src/components/Confirm.tsx} \textit{(new)}}
+
+Imperative, promise-based replacement for \texttt{window.confirm}:
+
+\begin{lstlisting}[language=Java]
+import { confirmDialog } from '@/components/Confirm';
+
+const ok = await confirmDialog({
+  title: 'Delete record',
+  message: 'This will permanently remove this sourcing record...',
+  confirmLabel: 'Delete',
+  destructive: true
+});
+if (!ok) return;
+\end{lstlisting}
+
+Keyboard support: \texttt{Esc} cancels, \texttt{Enter} confirms,
+\texttt{autoFocus} lands on the safe button by default
+(or the destructive button when \texttt{destructive: true} so deliberate
+typing isn't required, but click confirmation still is).
+Falls back to \texttt{window.confirm} if mounted before
+\texttt{ConfirmHost}.
+
+\subsection{Provider wiring}
+
+\textbf{File:} \texttt{src/components/QueryProvider.tsx}
+
+Mounted both hosts inside the existing \texttt{QueryClientProvider} so
+that every feature page (sourcing, contacts, calendar, events) inherits
+them without changing each page file.
+
+\begin{lstlisting}[language=Java]
+return (
+  <QueryClientProvider client={client}>
+    {children}
+    <ToastViewport />
+    <ConfirmHost />
+  </QueryClientProvider>
+);
+\end{lstlisting}
+
+\subsection{Styling}
+
+\textbf{File:} \texttt{src/app/globals.css}
+
+Added three blocks:
+
+\begin{itemize}[leftmargin=*]
+  \item \texttt{.toast-stack} / \texttt{.toast} +
+        \texttt{@keyframes toastIn} --- positioning, motion, layered shadow.
+  \item \texttt{.card-tap} --- subtle translateY hover-lift utility for
+        clickable cards.
+  \item \texttt{.skeleton} + \texttt{@keyframes shimmer} ---
+        ready for future loading states.
+\end{itemize}
+
+\hrule
+\bigskip
+
+\section{Replacements --- \texttt{alert/confirm} $\to$ Toast/Confirm}
+
+Every blocking call in the client tree was replaced. Successful
+write paths now also emit a positive \texttt{toast.success(...)} so the
+user gets confirmation, not silence.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{File} & \textbf{Replacement} \\
+\midrule
+\texttt{contacts/ContactsClient.tsx} & 3 alerts $\to$ toast + success on save \& import \\
+\texttt{sourcing/SourcingForm.tsx}   & 2 alerts + 1 confirm $\to$ toast + \texttt{confirmDialog} \\
+\texttt{sourcing/SourcingDetail.tsx} & 1 alert $\to$ toast (status-change success) \\
+\texttt{events/EventsClient.tsx}     & 2 alerts $\to$ toast + success on save \\
+\texttt{calendar/CalendarClient.tsx} & 3 alerts $\to$ toast + success on save \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The destructive \emph{Remove this record} prompt in
+\texttt{SourcingForm.tsx} now reads:
+
+\begin{lstlisting}[language=Java]
+const ok = await confirmDialog({
+  title: 'Delete record',
+  message: 'This will permanently remove this sourcing record. ' +
+           'This cannot be undone.',
+  confirmLabel: 'Delete',
+  destructive: true
+});
+\end{lstlisting}
+
+\hrule
+\bigskip
+
+\section{Smaller Polish}
+
+\subsection{Contacts search input}
+
+\textbf{File:} \texttt{src/app/contacts/ContactsClient.tsx}
+
+\begin{itemize}[leftmargin=*]
+  \item Leading \texttt{IconSearch} positioned inside the input.
+  \item Inline \emph{Clear} (\texttt{IconClose}) button appears when the
+        query is non-empty.
+  \item Padding adjusted (\texttt{padding-left: 34px}) to accommodate the
+        leading icon.
+\end{itemize}
+
+\subsection{Card hover-lift}
+
+Applied the new \texttt{.card-tap} class to:
+
+\begin{itemize}[leftmargin=*]
+  \item Contact cards in \texttt{ContactsClient.tsx}.
+  \item Event cards in \texttt{EventsClient.tsx}.
+\end{itemize}
+
+The class drives a 1px upward \texttt{translate} and a soft shadow on
+hover, with motion governed by the existing global
+\texttt{--ease} / \texttt{--t} tokens.
+
+\subsection{Stale emoji-to-SVG residue}
+
+Two lingering references to a removed \texttt{stars()} util in
+\texttt{events/EventsClient.tsx} were resolved:
+
+\begin{itemize}[leftmargin=*]
+  \item Line 136 (badge): replaced with
+        \texttt{<Stars n=\{event.importance\} size=\{11\} />}.
+  \item Line 277 (\texttt{<option>} text, where SVG can't render):
+        replaced with Unicode
+        \texttt{'\textbackslash u2605'.repeat(i) + '\textbackslash u2606'.repeat(5 - i)}.
+\end{itemize}
+
+\hrule
+\bigskip
+
+\section{Files Touched}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Path} & \textbf{Kind} \\
+\midrule
+\texttt{src/components/Toast.tsx}                & new \\
+\texttt{src/components/Confirm.tsx}              & new \\
+\texttt{src/components/QueryProvider.tsx}        & wired hosts \\
+\texttt{src/app/globals.css}                     & toast, skeleton, card-tap \\
+\texttt{src/app/api/import/route.ts}             & dedupe via \texttt{tryAdd} \\
+\texttt{src/app/contacts/ContactsClient.tsx}     & toasts, search polish, hover-lift \\
+\texttt{src/app/sourcing/SourcingForm.tsx}       & toasts, \texttt{confirmDialog} \\
+\texttt{src/app/sourcing/SourcingDetail.tsx}     & toasts \\
+\texttt{src/app/events/EventsClient.tsx}         & toasts, hover-lift, Stars fix \\
+\texttt{src/app/calendar/CalendarClient.tsx}     & toasts \\
+\midrule
+\textbf{Live database} & 2 duplicate pairs merged, FKs repointed \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\hrule
+\bigskip
+
+\section{Verification}
+
+\begin{itemize}[leftmargin=*]
+  \item \texttt{npx tsc --noEmit} --- clean, no diagnostics.
+  \item Post-cleanup duplicate query --- returns zero rows.
+  \item Existing component structure preserved across all feature pages.
+\end{itemize}
+
+\end{document}
