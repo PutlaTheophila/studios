@@ -340,10 +340,16 @@ function ExpenseRow({ expense, onClick }: { expense: Expense; onClick: () => voi
 // ── Detail modal (read-only) ────────────────────────────────
 
 function ExpenseDetail({ expenseId, onClose, onEdit }: { expenseId: string; onClose: () => void; onEdit: () => void }) {
-  const [expense, setExpense] = useState<Expense | null>(null);
+  const qc = useQueryClient();
+  const [expense, setExpense] = useState<Expense | null>(() => {
+    const cached = qc.getQueryData<Expense[]>(['expenses']);
+    return cached?.find(e => e.id === expenseId) ?? null;
+  });
+  const [loading, setLoading] = useState(!expense);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (expense) return;
     let cancelled = false;
     setLoadError(null);
     fetch(`/api/expenses/${expenseId}`)
@@ -351,10 +357,10 @@ function ExpenseDetail({ expenseId, onClose, onEdit }: { expenseId: string; onCl
         if (!r.ok) throw new Error((await r.json()).error || `Request failed: ${r.status}`);
         return r.json();
       })
-      .then(d => { if (!cancelled) setExpense(d); })
-      .catch(err => { if (!cancelled) setLoadError(err.message || 'Failed to load'); });
+      .then(d => { if (!cancelled) { setExpense(d); setLoading(false); } })
+      .catch(err => { if (!cancelled) { setLoadError(err.message || 'Failed to load'); setLoading(false); } });
     return () => { cancelled = true; };
-  }, [expenseId]);
+  }, [expenseId, expense]);
 
   if (loadError) {
     return (
@@ -366,55 +372,59 @@ function ExpenseDetail({ expenseId, onClose, onEdit }: { expenseId: string; onCl
       </div>
     );
   }
-  if (!expense) return null;
-
-  const catColor = EXPENSE_CATEGORY_COLORS[expense.category];
+  const catColor = expense ? EXPENSE_CATEGORY_COLORS[expense.category] : 'var(--tx3)';
 
   return (
     <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="panel">
         <div style={{ padding: '17px 20px 13px', borderBottom: '1px solid var(--bdr)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <div style={{ fontFamily: 'var(--fd)', fontSize: 16, fontWeight: 600 }}>{expense.title}</div>
-            <div style={{ marginTop: 6, display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
-              <span
-                style={{
-                  fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
-                  padding: '3px 8px', borderRadius: 10,
-                  background: 'var(--surf3)', color: catColor
-                }}
-              >
-                {EXPENSE_CATEGORY_LABELS[expense.category]}
-              </span>
-              {expense.reimbursable && (
-                <span className={expense.reimbursed ? 'badge badge-green' : 'badge badge-amber'}>
-                  {expense.reimbursed ? 'Reimbursed' : 'Reimbursable'}
-                </span>
-              )}
+          {loading ? (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div className="skeleton-bar" style={{ height: 16, width: '55%' }} />
+              <div className="skeleton-bar" style={{ height: 10, width: '35%' }} />
             </div>
-          </div>
+          ) : (
+            <div>
+              <div style={{ fontFamily: 'var(--fd)', fontSize: 16, fontWeight: 600 }}>{expense!.title}</div>
+              <div style={{ marginTop: 6, display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', padding: '3px 8px', borderRadius: 10, background: 'var(--surf3)', color: catColor }}>
+                  {EXPENSE_CATEGORY_LABELS[expense!.category]}
+                </span>
+                {expense!.reimbursable && (
+                  <span className={expense!.reimbursed ? 'badge badge-green' : 'badge badge-amber'}>
+                    {expense!.reimbursed ? 'Reimbursed' : 'Reimbursable'}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tx3)', display: 'inline-flex' }}><IconClose size={18} /></button>
         </div>
         <div style={{ padding: '17px 20px' }}>
-          <div style={{
-            background: 'var(--surf2)', border: '1px solid var(--bdr)', borderRadius: 'var(--r)',
-            padding: '14px 16px', marginBottom: 14, textAlign: 'center'
-          }}>
-            <div style={{ fontSize: 10, color: 'var(--tx3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>Amount</div>
-            <div style={{ fontFamily: 'var(--fm)', fontSize: 22, fontWeight: 700, color: 'var(--tx)' }}>
-              {formatMoney(Number(expense.amount), expense.currency)}
+          {loading ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div className="skeleton-bar" style={{ height: 60, borderRadius: 'var(--r)' }} />
+              {[1,2,3,4].map(i => <div key={i} className="skeleton-bar" style={{ height: 16 }} />)}
             </div>
-          </div>
-
-          <DetailRow label="Date" value={formatDate(expense.expense_date)} />
-          {expense.vendor && <DetailRow label="Vendor" value={expense.vendor} />}
-          <DetailRow label="Currency" value={expense.currency} />
-          <DetailRow label="Reimbursable" value={expense.reimbursable ? 'Yes' : 'No'} />
-          <DetailRow label="Reimbursed" value={expense.reimbursed ? 'Yes' : 'No'} />
-          {expense.notes && (
+          ) : (
             <>
-              <hr style={{ border: 0, borderTop: '1px solid var(--bdr)', margin: '12px 0' }} />
-              <DetailRow label="Notes" value={expense.notes} />
+              <div style={{ background: 'var(--surf2)', border: '1px solid var(--bdr)', borderRadius: 'var(--r)', padding: '14px 16px', marginBottom: 14, textAlign: 'center' }}>
+                <div style={{ fontSize: 10, color: 'var(--tx3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>Amount</div>
+                <div style={{ fontFamily: 'var(--fm)', fontSize: 22, fontWeight: 700, color: 'var(--tx)' }}>
+                  {formatMoney(Number(expense!.amount), expense!.currency)}
+                </div>
+              </div>
+              <DetailRow label="Date" value={formatDate(expense!.expense_date)} />
+              {expense!.vendor && <DetailRow label="Vendor" value={expense!.vendor} />}
+              <DetailRow label="Currency" value={expense!.currency} />
+              <DetailRow label="Reimbursable" value={expense!.reimbursable ? 'Yes' : 'No'} />
+              <DetailRow label="Reimbursed" value={expense!.reimbursed ? 'Yes' : 'No'} />
+              {expense!.notes && (
+                <>
+                  <hr style={{ border: 0, borderTop: '1px solid var(--bdr)', margin: '12px 0' }} />
+                  <DetailRow label="Notes" value={expense!.notes} />
+                </>
+              )}
             </>
           )}
         </div>
@@ -442,22 +452,40 @@ interface FormProps { expenseId: string | null; onClose: () => void; }
 
 function ExpenseForm({ expenseId, onClose }: FormProps) {
   const qc = useQueryClient();
-  const [form, setForm] = useState({
-    title: '',
-    amount: '',
-    currency: 'INR',
-    category: 'other' as ExpenseCategory,
-    expense_date: todayISODate(),
-    vendor: '',
-    notes: '',
-    reimbursable: false,
-    reimbursed: false
+
+  const [form, setForm] = useState(() => {
+    const defaultForm = {
+      title: '', amount: '', currency: 'INR', category: 'other' as ExpenseCategory,
+      expense_date: todayISODate(), vendor: '', notes: '', reimbursable: false, reimbursed: false
+    };
+    if (!expenseId) return defaultForm;
+    const cached = qc.getQueryData<Expense[]>(['expenses']);
+    const found = cached?.find(e => e.id === expenseId);
+    if (!found) return defaultForm;
+    return {
+      title: found.title || '',
+      amount: found.amount != null ? String(found.amount) : '',
+      currency: found.currency || 'INR',
+      category: found.category,
+      expense_date: found.expense_date || '',
+      vendor: found.vendor || '',
+      notes: found.notes || '',
+      reimbursable: !!found.reimbursable,
+      reimbursed: !!found.reimbursed
+    };
   });
+
+  const [formLoading, setFormLoading] = useState(() => {
+    if (!expenseId) return false;
+    const cached = qc.getQueryData<Expense[]>(['expenses']);
+    return !cached?.find(e => e.id === expenseId);
+  });
+
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!expenseId) return;
+    if (!expenseId || !formLoading) return;
     let cancelled = false;
     setLoadError(null);
     fetch(`/api/expenses/${expenseId}`)
@@ -478,10 +506,11 @@ function ExpenseForm({ expenseId, onClose }: FormProps) {
           reimbursable: !!d.reimbursable,
           reimbursed: !!d.reimbursed
         });
+        setFormLoading(false);
       })
-      .catch(err => { if (!cancelled) setLoadError(err.message || 'Failed to load'); });
+      .catch(err => { if (!cancelled) { setLoadError(err.message || 'Failed to load'); setFormLoading(false); } });
     return () => { cancelled = true; };
-  }, [expenseId]);
+  }, [expenseId, formLoading]);
 
   function update<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm(prev => ({ ...prev, [k]: v }));
@@ -495,36 +524,42 @@ function ExpenseForm({ expenseId, onClose }: FormProps) {
     if (!form.currency.trim()) { toast.error('Currency is required'); return; }
 
     setLoading(true);
-    try {
-      const payload = {
-        title: form.title.trim(),
-        amount: amt,
-        currency: form.currency.trim().toUpperCase(),
-        category: form.category,
-        expense_date: form.expense_date,
-        vendor: form.vendor.trim() || null,
-        notes: form.notes.trim() || null,
-        reimbursable: form.reimbursable,
-        reimbursed: form.reimbursed
-      };
-      const url = expenseId ? `/api/expenses/${expenseId}` : '/api/expenses';
-      const method = expenseId ? 'PATCH' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        toast.error(err.error || 'Save failed');
-        return;
-      }
-      qc.invalidateQueries({ queryKey: ['expenses'] });
-      toast.success(expenseId ? 'Expense updated' : 'Expense created');
-      onClose();
-    } finally {
-      setLoading(false);
+    const payload = {
+      title: form.title.trim(),
+      amount: amt,
+      currency: form.currency.trim().toUpperCase(),
+      category: form.category,
+      expense_date: form.expense_date,
+      vendor: form.vendor.trim() || null,
+      notes: form.notes.trim() || null,
+      reimbursable: form.reimbursable,
+      reimbursed: form.reimbursed
+    };
+
+    const prev = qc.getQueryData<Expense[]>(['expenses']) ?? [];
+    if (expenseId) {
+      qc.setQueryData<Expense[]>(['expenses'], old =>
+        (old ?? []).map(e => e.id === expenseId ? { ...e, ...payload } : e)
+      );
+    } else {
+      const tempId = `opt-${Date.now()}`;
+      qc.setQueryData<Expense[]>(['expenses'], old =>
+        [{ ...payload, id: tempId, created_at: new Date().toISOString() } as Expense, ...(old ?? [])]
+      );
     }
+    onClose();
+
+    const url = expenseId ? `/api/expenses/${expenseId}` : '/api/expenses';
+    const method = expenseId ? 'PATCH' : 'POST';
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error || 'Save failed');
+      qc.setQueryData(['expenses'], prev);
+      return;
+    }
+    toast.success(expenseId ? 'Expense updated' : 'Expense created');
+    qc.invalidateQueries({ queryKey: ['expenses'] });
   }
 
   async function remove() {
@@ -536,13 +571,18 @@ function ExpenseForm({ expenseId, onClose }: FormProps) {
       destructive: true
     });
     if (!ok) return;
+
+    const prev = qc.getQueryData<Expense[]>(['expenses']) ?? [];
+    qc.setQueryData<Expense[]>(['expenses'], old => (old ?? []).filter(e => e.id !== expenseId));
+    onClose();
+
     const res = await fetch(`/api/expenses/${expenseId}`, { method: 'DELETE' });
     if (res.ok) {
-      qc.invalidateQueries({ queryKey: ['expenses'] });
       toast.success('Expense deleted');
-      onClose();
+      qc.invalidateQueries({ queryKey: ['expenses'] });
     } else {
       toast.error('Delete failed');
+      qc.setQueryData(['expenses'], prev);
     }
   }
 
@@ -561,6 +601,16 @@ function ExpenseForm({ expenseId, onClose }: FormProps) {
               {loadError}
             </div>
           )}
+          {formLoading ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {[1,2,3,4,5].map(i => (
+                <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div className="skeleton-bar" style={{ height: 10, width: 80 }} />
+                  <div className="skeleton-bar" style={{ height: 36, width: '100%' }} />
+                </div>
+              ))}
+            </div>
+          ) : (<>
 
           <div className="form-row">
             <label>Title *</label>
@@ -637,11 +687,12 @@ function ExpenseForm({ expenseId, onClose }: FormProps) {
               Reimbursed
             </label>
           </div>
+          </>)}
         </div>
         <div style={{ padding: '12px 20px', borderTop: '1px solid var(--bdr)', display: 'flex', gap: 7, justifyContent: 'flex-end' }}>
           {expenseId && <button className="btn btn-danger btn-sm" onClick={remove}>Delete</button>}
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={loading}>{loading ? 'Saving…' : 'Save'}</button>
+          <button className="btn btn-primary" onClick={save} disabled={loading || formLoading}>{loading ? 'Saving…' : 'Save'}</button>
         </div>
       </div>
     </div>

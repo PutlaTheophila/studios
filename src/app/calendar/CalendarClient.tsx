@@ -33,7 +33,7 @@ export function CalendarClient() {
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [editingDate, setEditingDate] = useState<string | undefined>();
 
-  const { data: items = [] } = useQuery<ContentItemWithDeliverables[]>({
+  const { data: items = [], isLoading } = useQuery<ContentItemWithDeliverables[]>({
     queryKey: ['content'],
     queryFn: async () => {
       const r = await fetch('/api/content');
@@ -122,7 +122,18 @@ export function CalendarClient() {
 
         <FilterBar filter={filter} setFilter={setFilter} />
 
-        {view === 'month' ? (
+        {isLoading ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 1, background: 'var(--bdr)' }}>
+              {Array.from({ length: 35 }).map((_, i) => (
+                <div key={i} style={{ background: 'var(--surf)', minHeight: 90, padding: 6 }}>
+                  <div className="skeleton-bar" style={{ height: 11, width: 20, marginBottom: 6 }} />
+                  {i % 5 === 0 && <div className="skeleton-bar" style={{ height: 18, borderRadius: 4 }} />}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : view === 'month' ? (
           <>
             <div className="cal-dow">
               {DAY_NAMES.map((d, i) => (
@@ -206,7 +217,7 @@ export function CalendarClient() {
               ))}
             </div>
           </>
-        ) : (
+        ) : !isLoading ? (
           <AgendaView
             items={filtered}
             year={year}
@@ -215,7 +226,7 @@ export function CalendarClient() {
             onItemClick={(id) => setViewingId(id)}
             onDayClick={(d) => { setEditingDate(d); setEditingId('new'); }}
           />
-        )}
+        ) : null}
       </div>
 
       {editingId && (
@@ -323,19 +334,52 @@ function FilterBar({ filter, setFilter }: { filter: any; setFilter: (f: any) => 
   );
 }
 
+function contentFormFromData(d: any, defaultPlannedDate?: string) {
+  return {
+    title: d.title || '',
+    category: (d.category || 'personal') as ContentCategory,
+    stage: (d.stage || 'concept') as ContentStage,
+    planned_date: d.planned_date || defaultPlannedDate || '',
+    scheduled_date: d.scheduled_date || '',
+    posted_date: d.posted_date || '',
+    poc_name: d.poc_name || '',
+    poc_phone: d.poc_phone || '',
+    poc_email: d.poc_email || '',
+    notes: d.notes || ''
+  };
+}
+
 function ContentForm({ contentId, defaultPlannedDate, onClose }: { contentId: string | null; defaultPlannedDate?: string; onClose: () => void }) {
   const qc = useQueryClient();
-  const [form, setForm] = useState({
-    title: '', category: 'personal' as ContentCategory, stage: 'concept' as ContentStage,
-    planned_date: defaultPlannedDate || '', scheduled_date: '', posted_date: '',
-    poc_name: '', poc_phone: '', poc_email: '', notes: ''
+
+  const [form, setForm] = useState(() => {
+    if (!contentId) return contentFormFromData({}, defaultPlannedDate);
+    const cached = qc.getQueryData<ContentItemWithDeliverables[]>(['content']);
+    const found = cached?.find(c => c.id === contentId);
+    return found ? contentFormFromData(found) : contentFormFromData({}, defaultPlannedDate);
   });
-  const [deliverables, setDeliverables] = useState<{ content_type: ContentType; quantity: number }[]>([{ content_type: 'reel', quantity: 1 }]);
+
+  const [deliverables, setDeliverables] = useState<{ content_type: ContentType; quantity: number }[]>(() => {
+    if (!contentId) return [{ content_type: 'reel', quantity: 1 }];
+    const cached = qc.getQueryData<ContentItemWithDeliverables[]>(['content']);
+    const found = cached?.find(c => c.id === contentId);
+    const dels = Array.isArray(found?.deliverables) ? found!.deliverables : [];
+    return dels.length > 0
+      ? dels.map((x: any) => ({ content_type: x.content_type, quantity: x.quantity }))
+      : [{ content_type: 'reel', quantity: 1 }];
+  });
+
+  const [formLoading, setFormLoading] = useState(() => {
+    if (!contentId) return false;
+    const cached = qc.getQueryData<ContentItemWithDeliverables[]>(['content']);
+    return !cached?.find(c => c.id === contentId);
+  });
+
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!contentId) return;
+    if (!contentId || !formLoading) return;
     let cancelled = false;
     setLoadError(null);
     fetch(`/api/content/${contentId}`)
@@ -345,28 +389,18 @@ function ContentForm({ contentId, defaultPlannedDate, onClose }: { contentId: st
       })
       .then((d: any) => {
         if (cancelled) return;
-        setForm({
-          title: d.title || '',
-          category: d.category || 'personal',
-          stage: d.stage || 'concept',
-          planned_date: d.planned_date || '',
-          scheduled_date: d.scheduled_date || '',
-          posted_date: d.posted_date || '',
-          poc_name: d.poc_name || '',
-          poc_phone: d.poc_phone || '',
-          poc_email: d.poc_email || '',
-          notes: d.notes || ''
-        });
+        setForm(contentFormFromData(d));
         const dels = Array.isArray(d.deliverables) ? d.deliverables : [];
         setDeliverables(
           dels.length > 0
             ? dels.map((x: any) => ({ content_type: x.content_type, quantity: x.quantity }))
             : [{ content_type: 'reel', quantity: 1 }]
         );
+        setFormLoading(false);
       })
-      .catch(err => { if (!cancelled) setLoadError(err.message || 'Failed to load'); });
+      .catch(err => { if (!cancelled) { setLoadError(err.message || 'Failed to load'); setFormLoading(false); } });
     return () => { cancelled = true; };
-  }, [contentId]);
+  }, [contentId, formLoading]);
 
   function addDel() { setDeliverables(d => [...d, { content_type: 'reel', quantity: 1 }]); }
   function removeDel(i: number) { setDeliverables(d => d.filter((_, j) => j !== i)); }
@@ -378,21 +412,31 @@ function ContentForm({ contentId, defaultPlannedDate, onClose }: { contentId: st
     if (!form.title.trim()) { toast.error('Title is required'); return; }
     if (deliverables.length === 0) { toast.error('Add at least one deliverable'); return; }
     setLoading(true);
-    try {
-      const url = contentId ? `/api/content/${contentId}` : '/api/content';
-      const method = contentId ? 'PATCH' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, deliverables })
-      });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); toast.error(e.error || 'Save failed'); return; }
-      qc.invalidateQueries({ queryKey: ['content'] });
-      toast.success(contentId ? 'Content updated' : 'Content created');
-      onClose();
-    } finally {
-      setLoading(false);
+
+    const prev = qc.getQueryData<ContentItemWithDeliverables[]>(['content']) ?? [];
+    if (contentId) {
+      qc.setQueryData(['content'], (old: any[] = []) =>
+        old.map(c => c.id === contentId ? { ...c, ...form, deliverables } : c)
+      );
+    } else {
+      const tempId = `opt-${Date.now()}`;
+      qc.setQueryData(['content'], (old: any[] = []) =>
+        [{ ...form, id: tempId, deliverables, created_at: new Date().toISOString() }, ...old]
+      );
     }
+    onClose();
+
+    const url = contentId ? `/api/content/${contentId}` : '/api/content';
+    const method = contentId ? 'PATCH' : 'POST';
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...form, deliverables }) });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      toast.error(e.error || 'Save failed');
+      qc.setQueryData(['content'], prev);
+      return;
+    }
+    toast.success(contentId ? 'Content updated' : 'Content created');
+    qc.invalidateQueries({ queryKey: ['content'] });
   }
 
   return (
@@ -404,6 +448,16 @@ function ContentForm({ contentId, defaultPlannedDate, onClose }: { contentId: st
         </div>
         <div style={{ padding: '17px 20px' }}>
           {loadError && <div style={{ background: 'rgba(184,50,50,0.08)', color: 'var(--red)', padding: '8px 12px', borderRadius: 7, fontSize: 12, marginBottom: 12 }}>{loadError}</div>}
+          {formLoading ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {[1,2,3,4,5].map(i => (
+                <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div className="skeleton-bar" style={{ height: 10, width: 80 }} />
+                  <div className="skeleton-bar" style={{ height: 36, width: '100%' }} />
+                </div>
+              ))}
+            </div>
+          ) : (<>
           <div className="form-row"><label>Title</label><input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} /></div>
           <div className="form-row">
             <label>Category</label>
@@ -449,10 +503,11 @@ function ContentForm({ contentId, defaultPlannedDate, onClose }: { contentId: st
             </div>
             <div className="form-row"><label>Email</label><input type="email" value={form.poc_email} onChange={e => setForm({ ...form, poc_email: e.target.value })} /></div>
           </div>
+          </>)}
         </div>
         <div style={{ padding: '12px 20px', borderTop: '1px solid var(--bdr)', display: 'flex', gap: 7, justifyContent: 'flex-end' }}>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={loading}>{loading ? 'Saving…' : 'Save'}</button>
+          <button className="btn btn-primary" onClick={save} disabled={loading || formLoading}>{loading ? 'Saving…' : 'Save'}</button>
         </div>
       </div>
     </div>

@@ -19,7 +19,7 @@ export function EventsClient() {
   const [editingId, setEditingId] = useState<string | 'new' | null>(null);
   const [viewingId, setViewingId] = useState<string | null>(null);
 
-  const { data: events = [] } = useQuery<EventWithDetails[]>({
+  const { data: events = [], isLoading } = useQuery<EventWithDetails[]>({
     queryKey: ['events'],
     queryFn: async () => {
       const r = await fetch('/api/events');
@@ -82,7 +82,20 @@ export function EventsClient() {
 
         {view === 'list' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-            {filtered.length === 0 ? (
+            {isLoading ? (
+              [1,2,3].map(i => (
+                <div key={i} style={{ background: 'var(--surf)', border: '1px solid var(--bdr)', borderRadius: 'var(--rl)', padding: '14px 18px', display: 'flex', gap: 15, borderLeft: '5px solid var(--surf3)' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 44, alignItems: 'center' }}>
+                    <div className="skeleton-bar" style={{ height: 22, width: 32 }} />
+                    <div className="skeleton-bar" style={{ height: 9, width: 28 }} />
+                  </div>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div className="skeleton-bar" style={{ height: 13, width: '60%' }} />
+                    <div className="skeleton-bar" style={{ height: 11, width: '40%' }} />
+                  </div>
+                </div>
+              ))
+            ) : filtered.length === 0 ? (
               <div className="empty"><div className="empty-icon">✨</div><div className="empty-title">No events</div></div>
             ) : filtered.map(ev => (
               <EventCard key={ev.id} event={ev} onClick={() => setViewingId(ev.id)} />
@@ -194,20 +207,57 @@ function CalendarGrid({ year, month, events, onNav, onEventClick }: { year: numb
   );
 }
 
+const DEFAULT_EVENT_FORM = {
+  name: '', event_type: 'brand_launch', start_date: '', end_date: '',
+  city: '', venue: '', importance: 3, organiser: '',
+  poc_name: '', poc_phone: '', poc_email: '',
+  travel_required: false, travel_destination: '', travel_depart_date: '', travel_return_date: '', travel_hotel: '',
+  notes: ''
+};
+
+function eventFormFromData(d: any) {
+  return {
+    name: d.name || '',
+    event_type: d.event_type || 'brand_launch',
+    start_date: d.start_date || '',
+    end_date: d.end_date || '',
+    city: d.city || '',
+    venue: d.venue || '',
+    importance: d.importance ?? 3,
+    organiser: d.organiser || '',
+    poc_name: d.poc_name || '',
+    poc_phone: d.poc_phone || '',
+    poc_email: d.poc_email || '',
+    travel_required: !!d.travel_required,
+    travel_destination: d.travel_destination || '',
+    travel_depart_date: d.travel_depart_date || '',
+    travel_return_date: d.travel_return_date || '',
+    travel_hotel: d.travel_hotel || '',
+    notes: d.notes || ''
+  };
+}
+
 function EventForm({ eventId, onClose }: { eventId: string | null; onClose: () => void }) {
   const qc = useQueryClient();
-  const [form, setForm] = useState<any>({
-    name: '', event_type: 'brand_launch', start_date: '', end_date: '',
-    city: '', venue: '', importance: 3, organiser: '',
-    poc_name: '', poc_phone: '', poc_email: '',
-    travel_required: false, travel_destination: '', travel_depart_date: '', travel_return_date: '', travel_hotel: '',
-    notes: ''
+
+  const [form, setForm] = useState<any>(() => {
+    if (!eventId) return DEFAULT_EVENT_FORM;
+    const cached = qc.getQueryData<EventWithDetails[]>(['events']);
+    const found = cached?.find(e => e.id === eventId);
+    return found ? eventFormFromData(found) : DEFAULT_EVENT_FORM;
   });
+
+  const [formLoading, setFormLoading] = useState(() => {
+    if (!eventId) return false;
+    const cached = qc.getQueryData<EventWithDetails[]>(['events']);
+    return !cached?.find(e => e.id === eventId);
+  });
+
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!eventId) return;
+    if (!eventId || !formLoading) return;
     let cancelled = false;
     setLoadError(null);
     fetch(`/api/events/${eventId}`)
@@ -217,49 +267,44 @@ function EventForm({ eventId, onClose }: { eventId: string | null; onClose: () =
       })
       .then((d: any) => {
         if (cancelled) return;
-        setForm({
-          name: d.name || '',
-          event_type: d.event_type || 'brand_launch',
-          start_date: d.start_date || '',
-          end_date: d.end_date || '',
-          city: d.city || '',
-          venue: d.venue || '',
-          importance: d.importance ?? 3,
-          organiser: d.organiser || '',
-          poc_name: d.poc_name || '',
-          poc_phone: d.poc_phone || '',
-          poc_email: d.poc_email || '',
-          travel_required: !!d.travel_required,
-          travel_destination: d.travel_destination || '',
-          travel_depart_date: d.travel_depart_date || '',
-          travel_return_date: d.travel_return_date || '',
-          travel_hotel: d.travel_hotel || '',
-          notes: d.notes || ''
-        });
+        setForm(eventFormFromData(d));
+        setFormLoading(false);
       })
-      .catch(err => { if (!cancelled) setLoadError(err.message || 'Failed to load'); });
+      .catch(err => { if (!cancelled) { setLoadError(err.message || 'Failed to load'); setFormLoading(false); } });
     return () => { cancelled = true; };
-  }, [eventId]);
+  }, [eventId, formLoading]);
 
   async function save() {
     if (!form.name.trim() || !form.start_date) { toast.error('Name and start date are required'); return; }
     setLoading(true);
-    try {
-      const url = eventId ? `/api/events/${eventId}` : '/api/events';
-      const method = eventId ? 'PATCH' : 'POST';
-      const body: any = { ...form, end_date: form.end_date || form.start_date };
-      if (!eventId) {
-        body.deliverables = [];
-        body.sourcing_ids = [];
-      }
-      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); toast.error(e.error || 'Save failed'); return; }
-      qc.invalidateQueries({ queryKey: ['events'] });
-      toast.success(eventId ? 'Event updated' : 'Event created');
-      onClose();
-    } finally {
-      setLoading(false);
+
+    const prev = qc.getQueryData<EventWithDetails[]>(['events']) ?? [];
+    if (eventId) {
+      qc.setQueryData<EventWithDetails[]>(['events'], old =>
+        (old ?? []).map(e => e.id === eventId ? { ...e, ...form, end_date: form.end_date || form.start_date } : e)
+      );
+    } else {
+      const tempId = `opt-${Date.now()}`;
+      qc.setQueryData<EventWithDetails[]>(['events'], old =>
+        [{ ...form, id: tempId, end_date: form.end_date || form.start_date, deliverables: [], created_at: new Date().toISOString() } as any, ...(old ?? [])]
+      );
     }
+    onClose();
+
+    const url = eventId ? `/api/events/${eventId}` : '/api/events';
+    const method = eventId ? 'PATCH' : 'POST';
+    const body: any = { ...form, end_date: form.end_date || form.start_date };
+    if (!eventId) { body.deliverables = []; body.sourcing_ids = []; }
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      toast.error(e.error || 'Save failed');
+      qc.setQueryData(['events'], prev);
+      return;
+    }
+    toast.success(eventId ? 'Event updated' : 'Event created');
+    qc.invalidateQueries({ queryKey: ['events'] });
   }
 
   return (
@@ -271,6 +316,16 @@ function EventForm({ eventId, onClose }: { eventId: string | null; onClose: () =
         </div>
         <div style={{ padding: '17px 20px' }}>
           {loadError && <div style={{ background: 'rgba(184,50,50,0.08)', color: 'var(--red)', padding: '8px 12px', borderRadius: 7, fontSize: 12, marginBottom: 12 }}>{loadError}</div>}
+          {formLoading ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {[1,2,3,4,5,6].map(i => (
+                <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div className="skeleton-bar" style={{ height: 10, width: 80 }} />
+                  <div className="skeleton-bar" style={{ height: 36, width: '100%' }} />
+                </div>
+              ))}
+            </div>
+          ) : (<>
           <div className="form-row"><label>Event Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
           <div className="form-grid">
             <div className="form-row">
@@ -319,10 +374,11 @@ function EventForm({ eventId, onClose }: { eventId: string | null; onClose: () =
             <div className="form-row"><label>Email</label><input type="email" value={form.poc_email} onChange={e => setForm({ ...form, poc_email: e.target.value })} /></div>
           </div>
           <div className="form-row"><label>Notes</label><textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
+          </>)}
         </div>
         <div style={{ padding: '12px 20px', borderTop: '1px solid var(--bdr)', display: 'flex', gap: 7, justifyContent: 'flex-end' }}>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={loading}>{loading ? 'Saving…' : 'Save'}</button>
+          <button className="btn btn-primary" onClick={save} disabled={loading || formLoading}>{loading ? 'Saving…' : 'Save'}</button>
         </div>
       </div>
     </div>

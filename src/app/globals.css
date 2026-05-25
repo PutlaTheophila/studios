@@ -54,6 +54,16 @@
   --t-slow: 300ms;
 }
 
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.skeleton-bar {
+  border-radius: 6px;
+  background: var(--surf3);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 *::selection { background: var(--aglow-s); color: var(--tx); }
 

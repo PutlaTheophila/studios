@@ -3,37 +3,64 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { SOURCING_STATUSES } from '@/lib/constants';
-import type { SourcingStatus, ContentType } from '@/types/database';
+import type { SourcingRecordWithDeliverables, SourcingStatus, ContentType } from '@/types/database';
 import { IconClose } from '@/components/Icons';
 import { toast } from '@/components/Toast';
 import { confirmDialog } from '@/components/Confirm';
 
 interface Props { recordId: string | null; onClose: () => void; }
 
+const DEFAULT_FORM = {
+  brand: '', outfit: '', agency: '',
+  poc_name: '', poc_phone: '', poc_email: '',
+  event: '', source_date: '', return_date: '',
+  status: 'Pending' as SourcingStatus, notes: ''
+};
+
+function formFromData(d: any) {
+  return {
+    brand: d.brand || '', outfit: d.outfit || '', agency: d.agency || '',
+    poc_name: d.poc_name || '', poc_phone: d.poc_phone || '', poc_email: d.poc_email || '',
+    event: d.event || '', source_date: d.source_date || '', return_date: d.return_date || '',
+    status: d.status, notes: d.notes || ''
+  };
+}
+
 export function SourcingForm({ recordId, onClose }: Props) {
   const qc = useQueryClient();
-  const [form, setForm] = useState({
-    brand: '', outfit: '', agency: '',
-    poc_name: '', poc_phone: '', poc_email: '',
-    event: '', source_date: '', return_date: '',
-    status: 'Pending' as SourcingStatus, notes: ''
+
+  const [form, setForm] = useState(() => {
+    if (!recordId) return DEFAULT_FORM;
+    const cached = qc.getQueryData<SourcingRecordWithDeliverables[]>(['sourcing']);
+    const found = cached?.find(r => r.id === recordId);
+    return found ? formFromData(found) : DEFAULT_FORM;
   });
-  const [deliverables, setDeliverables] = useState<{ content_type: ContentType; quantity: number }[]>([]);
+
+  const [deliverables, setDeliverables] = useState<{ content_type: ContentType; quantity: number }[]>(() => {
+    if (!recordId) return [];
+    const cached = qc.getQueryData<SourcingRecordWithDeliverables[]>(['sourcing']);
+    const found = cached?.find(r => r.id === recordId);
+    const dels = Array.isArray(found?.deliverables) ? found!.deliverables : [];
+    return dels.map((x: any) => ({ content_type: x.content_type, quantity: x.quantity }));
+  });
+
+  const [formLoading, setFormLoading] = useState(() => {
+    if (!recordId) return false;
+    const cached = qc.getQueryData<SourcingRecordWithDeliverables[]>(['sourcing']);
+    return !cached?.find(r => r.id === recordId);
+  });
+
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!recordId) return;
+    if (!recordId || !formLoading) return;
     fetch(`/api/sourcing/${recordId}`).then(r => r.json()).then((d: any) => {
-      setForm({
-        brand: d.brand || '', outfit: d.outfit || '', agency: d.agency || '',
-        poc_name: d.poc_name || '', poc_phone: d.poc_phone || '', poc_email: d.poc_email || '',
-        event: d.event || '', source_date: d.source_date || '', return_date: d.return_date || '',
-        status: d.status, notes: d.notes || ''
-      });
+      setForm(formFromData(d));
       const dels = Array.isArray(d.deliverables) ? d.deliverables : [];
       setDeliverables(dels.map((x: any) => ({ content_type: x.content_type, quantity: x.quantity })));
-    });
-  }, [recordId]);
+      setFormLoading(false);
+    }).catch(() => setFormLoading(false));
+  }, [recordId, formLoading]);
 
   function update<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm(prev => ({ ...prev, [k]: v }));
@@ -48,19 +75,36 @@ export function SourcingForm({ recordId, onClose }: Props) {
   async function save() {
     if (!form.brand.trim()) { toast.error('Brand is required'); return; }
     setLoading(true);
-    try {
-      const url = recordId ? `/api/sourcing/${recordId}` : '/api/sourcing';
-      const method = recordId ? 'PATCH' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, deliverables })
-      });
-      if (!res.ok) { const err = await res.json().catch(() => ({})); toast.error(err.error || 'Save failed'); return; }
-      qc.invalidateQueries({ queryKey: ['sourcing'] });
-      toast.success(recordId ? 'Record updated' : 'Record created');
-      onClose();
-    } finally { setLoading(false); }
+
+    const prev = qc.getQueryData<SourcingRecordWithDeliverables[]>(['sourcing']) ?? [];
+    if (recordId) {
+      qc.setQueryData(['sourcing'], (old: any[] = []) =>
+        old.map(r => r.id === recordId ? { ...r, ...form, deliverables } : r)
+      );
+    } else {
+      const tempId = `opt-${Date.now()}`;
+      qc.setQueryData(['sourcing'], (old: any[] = []) =>
+        [{ ...form, id: tempId, deliverables, created_at: new Date().toISOString() }, ...old]
+      );
+    }
+    onClose();
+
+    const url = recordId ? `/api/sourcing/${recordId}` : '/api/sourcing';
+    const method = recordId ? 'PATCH' : 'POST';
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...form, deliverables })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error || 'Save failed');
+      qc.setQueryData(['sourcing'], prev);
+      return;
+    }
+    toast.success(recordId ? 'Record updated' : 'Record created');
+    qc.invalidateQueries({ queryKey: ['sourcing'] });
   }
 
   async function remove() {
@@ -72,13 +116,20 @@ export function SourcingForm({ recordId, onClose }: Props) {
       destructive: true
     });
     if (!ok) return;
+
+    const prev = qc.getQueryData<SourcingRecordWithDeliverables[]>(['sourcing']) ?? [];
+    qc.setQueryData<SourcingRecordWithDeliverables[]>(['sourcing'], old =>
+      (old ?? []).filter(r => r.id !== recordId)
+    );
+    onClose();
+
     const res = await fetch(`/api/sourcing/${recordId}`, { method: 'DELETE' });
     if (res.ok) {
-      qc.invalidateQueries({ queryKey: ['sourcing'] });
       toast.success('Record deleted');
-      onClose();
+      qc.invalidateQueries({ queryKey: ['sourcing'] });
     } else {
       toast.error('Delete failed');
+      qc.setQueryData(['sourcing'], prev);
     }
   }
 
@@ -92,6 +143,16 @@ export function SourcingForm({ recordId, onClose }: Props) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tx3)', display: 'inline-flex' }}><IconClose size={18} /></button>
         </div>
         <div style={{ padding: '17px 20px' }}>
+          {formLoading ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {[1,2,3,4,5].map(i => (
+                <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div className="skeleton-bar" style={{ height: 10, width: 80 }} />
+                  <div className="skeleton-bar" style={{ height: 36, width: '100%' }} />
+                </div>
+              ))}
+            </div>
+          ) : (<>
           <div className="form-grid">
             <div className="form-row"><label>Brand Name *</label><input value={form.brand} onChange={e => update('brand', e.target.value)} /></div>
             <div className="form-row"><label>Agency</label><input value={form.agency} onChange={e => update('agency', e.target.value)} /></div>
@@ -137,11 +198,12 @@ export function SourcingForm({ recordId, onClose }: Props) {
             <button onClick={addDel} className="btn btn-secondary btn-sm" type="button">+ Add Deliverable</button>
           </div>
           <div className="form-row"><label>Notes</label><textarea value={form.notes} onChange={e => update('notes', e.target.value)} /></div>
+          </>)}
         </div>
         <div style={{ padding: '12px 20px', borderTop: '1px solid var(--bdr)', display: 'flex', gap: 7, justifyContent: 'flex-end' }}>
           {recordId && <button className="btn btn-danger btn-sm" onClick={remove}>Delete</button>}
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={loading}>{loading ? 'Saving…' : 'Save'}</button>
+          <button className="btn btn-primary" onClick={save} disabled={loading || formLoading}>{loading ? 'Saving…' : 'Save'}</button>
         </div>
       </div>
     </div>

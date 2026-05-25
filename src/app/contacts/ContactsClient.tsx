@@ -16,7 +16,7 @@ export function ContactsClient() {
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
 
-  const { data: contacts = [] } = useQuery<Contact[]>({
+  const { data: contacts = [], isLoading } = useQuery<Contact[]>({
     queryKey: ['contacts'],
     queryFn: async () => {
       const r = await fetch('/api/contacts');
@@ -92,7 +92,9 @@ export function ContactsClient() {
           <button className="btn btn-secondary btn-sm" onClick={() => { setSearch(''); setFilters({ city: 'all', profession: 'all', agency: 'all' }); }}>Clear</button>
         </div>
 
-        {filtered.length === 0 ? (
+        {isLoading ? (
+          <ContactsSkeleton />
+        ) : filtered.length === 0 ? (
           <div className="empty"><div className="empty-icon"><IconUser size={42} /></div><div className="empty-title">No contacts</div></div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 11 }}>
@@ -135,6 +137,23 @@ export function ContactsClient() {
   );
 }
 
+function ContactsSkeleton() {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 11 }}>
+      {[1,2,3,4,5,6].map(i => (
+        <div key={i} style={{ background: 'var(--surf)', border: '1px solid var(--bdr)', borderRadius: 'var(--rl)', padding: '15px 17px', display: 'flex', gap: 13 }}>
+          <div className="skeleton-bar" style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0 }} />
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div className="skeleton-bar" style={{ height: 13, width: '70%' }} />
+            <div className="skeleton-bar" style={{ height: 10, width: '90%' }} />
+            <div className="skeleton-bar" style={{ height: 10, width: '50%' }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function FilterSelect({ label, value, options, onChange }: {
   label: string;
   value: string;
@@ -154,17 +173,42 @@ function FilterSelect({ label, value, options, onChange }: {
   );
 }
 
+const DEFAULT_FORM = {
+  name: '', agency: '', city: '', profession: 'Brand Manager',
+  phone: '', email: '', instagram: '', notes: ''
+};
+
 function ContactForm({ contactId, onClose }: { contactId: string | null; onClose: () => void }) {
   const qc = useQueryClient();
-  const [form, setForm] = useState({
-    name: '', agency: '', city: '', profession: 'Brand Manager',
-    phone: '', email: '', instagram: '', notes: ''
+
+  const [form, setForm] = useState(() => {
+    if (!contactId) return DEFAULT_FORM;
+    const cached = qc.getQueryData<Contact[]>(['contacts']);
+    const found = cached?.find(c => c.id === contactId);
+    if (!found) return DEFAULT_FORM;
+    return {
+      name: found.name || '',
+      agency: found.agency || '',
+      city: found.city || '',
+      profession: found.profession || 'Brand Manager',
+      phone: found.phone || '',
+      email: found.email || '',
+      instagram: found.instagram || '',
+      notes: found.notes || ''
+    };
   });
+
+  const [formLoading, setFormLoading] = useState(() => {
+    if (!contactId) return false;
+    const cached = qc.getQueryData<Contact[]>(['contacts']);
+    return !cached?.find(c => c.id === contactId);
+  });
+
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!contactId) return;
+    if (!contactId || !formLoading) return;
     let cancelled = false;
     setLoadError(null);
     fetch(`/api/contacts/${contactId}`)
@@ -184,25 +228,41 @@ function ContactForm({ contactId, onClose }: { contactId: string | null; onClose
           instagram: d.instagram || '',
           notes: d.notes || ''
         });
+        setFormLoading(false);
       })
-      .catch(err => { if (!cancelled) setLoadError(err.message || 'Failed to load'); });
+      .catch(err => { if (!cancelled) { setLoadError(err.message || 'Failed to load'); setFormLoading(false); } });
     return () => { cancelled = true; };
-  }, [contactId]);
+  }, [contactId, formLoading]);
 
   async function save() {
     if (!form.name.trim()) { toast.error('Name is required'); return; }
     setLoading(true);
-    try {
-      const url = contactId ? `/api/contacts/${contactId}` : '/api/contacts';
-      const method = contactId ? 'PATCH' : 'POST';
-      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); toast.error(e.error || 'Save failed'); return; }
-      qc.invalidateQueries({ queryKey: ['contacts'] });
-      toast.success(contactId ? 'Contact updated' : 'Contact created');
-      onClose();
-    } finally {
-      setLoading(false);
+
+    const prev = qc.getQueryData<Contact[]>(['contacts']) ?? [];
+    if (contactId) {
+      qc.setQueryData<Contact[]>(['contacts'], old =>
+        (old ?? []).map(c => c.id === contactId ? { ...c, ...form } : c)
+      );
+    } else {
+      const tempId = `opt-${Date.now()}`;
+      qc.setQueryData<Contact[]>(['contacts'], old =>
+        [{ ...form, id: tempId, created_at: new Date().toISOString() } as Contact, ...(old ?? [])]
+      );
     }
+    onClose();
+
+    const url = contactId ? `/api/contacts/${contactId}` : '/api/contacts';
+    const method = contactId ? 'PATCH' : 'POST';
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      toast.error(e.error || 'Save failed');
+      qc.setQueryData(['contacts'], prev);
+      return;
+    }
+    toast.success(contactId ? 'Contact updated' : 'Contact created');
+    qc.invalidateQueries({ queryKey: ['contacts'] });
   }
 
   return (
@@ -214,29 +274,48 @@ function ContactForm({ contactId, onClose }: { contactId: string | null; onClose
         </div>
         <div style={{ padding: '17px 20px' }}>
           {loadError && <div style={{ background: 'rgba(184,50,50,0.08)', color: 'var(--red)', padding: '8px 12px', borderRadius: 7, fontSize: 12, marginBottom: 12 }}>{loadError}</div>}
-          <div className="form-row"><label>Full Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
-          <div className="form-grid">
-            <div className="form-row">
-              <label>Profession</label>
-              <select value={form.profession} onChange={e => setForm({ ...form, profession: e.target.value })}>
-                {PROFESSIONS.map(p => <option key={p}>{p}</option>)}
-              </select>
-            </div>
-            <div className="form-row"><label>Agency</label><input value={form.agency} onChange={e => setForm({ ...form, agency: e.target.value })} /></div>
-          </div>
-          <div className="form-row"><label>City</label><input value={form.city} onChange={e => setForm({ ...form, city: e.target.value })} /></div>
-          <div className="form-grid">
-            <div className="form-row"><label>Phone</label><input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} /></div>
-            <div className="form-row"><label>Email</label><input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></div>
-          </div>
-          <div className="form-row"><label>Instagram</label><input value={form.instagram} onChange={e => setForm({ ...form, instagram: e.target.value })} placeholder="@handle" /></div>
-          <div className="form-row"><label>Notes</label><textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
+          {formLoading ? (
+            <FormSkeleton rows={5} />
+          ) : (
+            <>
+              <div className="form-row"><label>Full Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
+              <div className="form-grid">
+                <div className="form-row">
+                  <label>Profession</label>
+                  <select value={form.profession} onChange={e => setForm({ ...form, profession: e.target.value })}>
+                    {PROFESSIONS.map(p => <option key={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div className="form-row"><label>Agency</label><input value={form.agency} onChange={e => setForm({ ...form, agency: e.target.value })} /></div>
+              </div>
+              <div className="form-row"><label>City</label><input value={form.city} onChange={e => setForm({ ...form, city: e.target.value })} /></div>
+              <div className="form-grid">
+                <div className="form-row"><label>Phone</label><input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} /></div>
+                <div className="form-row"><label>Email</label><input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></div>
+              </div>
+              <div className="form-row"><label>Instagram</label><input value={form.instagram} onChange={e => setForm({ ...form, instagram: e.target.value })} placeholder="@handle" /></div>
+              <div className="form-row"><label>Notes</label><textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
+            </>
+          )}
         </div>
         <div style={{ padding: '12px 20px', borderTop: '1px solid var(--bdr)', display: 'flex', gap: 7, justifyContent: 'flex-end' }}>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={loading}>{loading ? 'Saving…' : 'Save'}</button>
+          <button className="btn btn-primary" onClick={save} disabled={loading || formLoading}>{loading ? 'Saving…' : 'Save'}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function FormSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div className="skeleton-bar" style={{ height: 10, width: 80 }} />
+          <div className="skeleton-bar" style={{ height: 36, width: '100%' }} />
+        </div>
+      ))}
     </div>
   );
 }
