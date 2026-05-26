@@ -1,29 +1,20 @@
 import type { Metadata } from 'next';
-import localFont from 'next/font/local';
+import { Inter, Instrument_Serif } from 'next/font/google';
 import './globals.css';
 import { QueryProvider } from '@/components/QueryProvider';
 
-const tasaOrbiter = localFont({
-  src: [
-    { path: '../../fonts/fonts/TASAOrbiter-Regular.ttf',    weight: '400', style: 'normal' },
-    { path: '../../fonts/fonts/TASAOrbiter-Medium.ttf',     weight: '500', style: 'normal' },
-    { path: '../../fonts/fonts/TASAOrbiter-SemiBold.ttf',   weight: '600', style: 'normal' },
-    { path: '../../fonts/fonts/TASAOrbiter-Bold.ttf',       weight: '700', style: 'normal' },
-    { path: '../../fonts/fonts/TASAOrbiter-ExtraBold.ttf',  weight: '800', style: 'normal' }
-  ],
-  variable: '--font-display',
+const inter = Inter({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800'],
+  variable: '--font-body',
   display: 'swap'
 });
 
-const nunito = localFont({
-  src: [
-    { path: '../../fonts/fonts/Nunito-Regular.ttf',    weight: '400', style: 'normal' },
-    { path: '../../fonts/fonts/Nunito-Medium.ttf',     weight: '500', style: 'normal' },
-    { path: '../../fonts/fonts/Nunito-SemiBold.ttf',   weight: '600', style: 'normal' },
-    { path: '../../fonts/fonts/Nunito-Bold.ttf',       weight: '700', style: 'normal' },
-    { path: '../../fonts/fonts/Nunito-ExtraBold.ttf',  weight: '800', style: 'normal' }
-  ],
-  variable: '--font-body',
+const instrumentSerif = Instrument_Serif({
+  subsets: ['latin'],
+  weight: ['400'],
+  style: ['normal', 'italic'],
+  variable: '--font-display',
   display: 'swap'
 });
 
@@ -34,7 +25,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${tasaOrbiter.variable} ${nunito.variable}`}>
+    <html lang="en" className={`${inter.variable} ${instrumentSerif.variable}`}>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       </head>

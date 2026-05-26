@@ -1,35 +1,35 @@
 :root {
-  /* SURFACES — refined neutral palette with creamy warmth */
-  --bg: #F4F1EB;
+  /* SURFACES — sarvam off-white minimalism */
+  --bg: #FAFAFA;
   --surf: #FFFFFF;
-  --surf2: #FAF8F4;
-  --surf3: #F0EDE6;
-  --bdr: #E8E3DA;
-  --bdr2: #D9D3C8;
+  --surf2: #F5F5F7;
+  --surf3: #F0F1F5;
+  --bdr: #E6E6E6;
+  --bdr2: #F0F0F0;
 
-  /* TEXT — rich contrast hierarchy */
-  --tx: #1C1814;
-  --tx2: #4A443C;
-  --tx3: #908880;
+  /* TEXT — sarvam near-black with subtle blue tint */
+  --tx: #13121E;
+  --tx2: #3A3F5C;
+  --tx3: #6A6A7A;
 
-  /* ACCENT — warm bronze, refined */
-  --acc: #8E6B3C;
-  --acc-h: #745530;
-  --aglow: rgba(142, 107, 60, 0.08);
-  --aglow-s: rgba(142, 107, 60, 0.18);
+  /* ACCENT — sarvam indigo */
+  --acc: #4250D5;
+  --acc-h: #3640B8;
+  --aglow: rgba(66, 80, 213, 0.06);
+  --aglow-s: rgba(66, 80, 213, 0.15);
 
-  /* SEMANTIC — muted, professional tones */
-  --red: #C0483C;
-  --red-soft: rgba(192, 72, 60, 0.08);
-  --green: #3A7A52;
-  --green-soft: rgba(58, 122, 82, 0.08);
-  --blue: #3B6098;
-  --blue-soft: rgba(59, 96, 152, 0.08);
+  /* SEMANTIC — sarvam pastel accent palette */
+  --red: #C43D2B;
+  --red-soft: rgba(196, 61, 43, 0.06);
+  --green: #496D21;
+  --green-soft: rgba(73, 109, 33, 0.06);
+  --blue: #4250D5;
+  --blue-soft: rgba(66, 80, 213, 0.06);
   --teal: #2D7A7A;
-  --amber: #A07020;
-  --amber-soft: rgba(160, 112, 32, 0.08);
-  --purple: #6B5B95;
-  --purple-soft: rgba(107, 91, 149, 0.08);
+  --amber: #C08827;
+  --amber-soft: rgba(254, 177, 43, 0.10);
+  --purple: #818CF8;
+  --purple-soft: rgba(129, 140, 248, 0.10);
 
   /* TYPE */
   --fd: var(--font-display), 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
